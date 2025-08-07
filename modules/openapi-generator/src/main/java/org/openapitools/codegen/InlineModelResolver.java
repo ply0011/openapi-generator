@@ -48,6 +48,7 @@ public class InlineModelResolver {
     public boolean resolveInlineEnums = false;
     public boolean skipSchemaReuse = false; // skip reusing inline schema if set to true
     public Boolean refactorAllOfInlineSchemas = null; // refactor allOf inline schemas into $ref
+    public boolean responseModelNameWithKey = false;
 
     // structure mapper sorts properties alphabetically on write to ensure models are
     // serialized consistently for lookup of existing models
@@ -92,6 +93,11 @@ public class InlineModelResolver {
             this.resolveInlineEnums = Boolean.valueOf(this.inlineSchemaOptions.get("RESOLVE_INLINE_ENUMS"));
         } else {
             // not set so default to null;
+        }
+
+        if ("true".equalsIgnoreCase(
+                this.inlineSchemaOptions.getOrDefault("RESPONSE_MODEL_NAME_WITH_KEY", "false"))) {
+            this.responseModelNameWithKey = true;
         }
     }
 
@@ -585,8 +591,13 @@ public class InlineModelResolver {
             String key = responsesEntry.getKey();
             ApiResponse response = responsesEntry.getValue();
 
-            flattenContent(response.getContent(),
-                    (operation.getOperationId() == null ? modelName : operation.getOperationId()) + "_" + key + "_response");
+            String flattenModelName = modelName;
+            if (null != operation.getOperationId()) {
+                flattenModelName = operation.getOperationId();
+            }
+            flattenModelName += (responseModelNameWithKey ? "_" + key : "") + "_response";
+
+            flattenContent(response.getContent(), flattenModelName);
         }
     }
 
