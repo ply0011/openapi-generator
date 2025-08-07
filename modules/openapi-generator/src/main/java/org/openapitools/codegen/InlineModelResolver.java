@@ -596,6 +596,9 @@ public class InlineModelResolver {
                 flattenModelName = operation.getOperationId();
             }
             flattenModelName += (responseModelNameWithKey ? "_" + key : "") + "_response";
+            flattenModelName = flattenModelName.replaceFirst("count_", "")
+                    .replaceFirst("find_", "")
+                    .replaceFirst("get_", "");
 
             flattenContent(response.getContent(), flattenModelName);
         }
