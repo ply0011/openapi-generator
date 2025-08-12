@@ -99,6 +99,7 @@ public class SpringCodegen extends AbstractJavaCodegen
     public static final String USE_SEALED = "useSealed";
     public static final String OPTIONAL_ACCEPT_NULLABLE = "optionalAcceptNullable";
     public static final String USE_SPRING_BUILT_IN_VALIDATION = "useSpringBuiltInValidation";
+    public static final String ENABLE_RESPONSE_GENERIC = "enableResponseGeneric";
 
     @Getter
     public enum RequestMappingMode {
@@ -159,6 +160,8 @@ public class SpringCodegen extends AbstractJavaCodegen
     protected boolean optionalAcceptNullable = true;
     @Getter @Setter
     protected boolean useSpringBuiltInValidation = false;
+    @Getter @Setter
+    protected boolean enableResponseGeneric = false;
 
     public SpringCodegen() {
         super();
@@ -275,6 +278,9 @@ public class SpringCodegen extends AbstractJavaCodegen
         cliOptions.add(CliOption.newBoolean(OPTIONAL_ACCEPT_NULLABLE,
                 "Use `ofNullable` instead of just `of` to accept null values when using Optional.",
                 optionalAcceptNullable));
+        cliOptions.add(CliOption.newBoolean(ENABLE_RESPONSE_GENERIC,
+                "Enable generic type for Response classes based on data list type.",
+                enableResponseGeneric));
 
         supportedLibraries.put(SPRING_BOOT, "Spring-boot Server application.");
         supportedLibraries.put(SPRING_CLOUD_LIBRARY,
@@ -446,6 +452,7 @@ public class SpringCodegen extends AbstractJavaCodegen
         }
         convertPropertyToBooleanAndWriteBack(OPTIONAL_ACCEPT_NULLABLE, this::setOptionalAcceptNullable);
         convertPropertyToBooleanAndWriteBack(USE_SPRING_BUILT_IN_VALIDATION, this::setUseSpringBuiltInValidation);
+        convertPropertyToBooleanAndWriteBack(ENABLE_RESPONSE_GENERIC, this::setEnableResponseGeneric);
 
         additionalProperties.put("springHttpStatus", new SpringHttpStatusLambda());
 
@@ -787,6 +794,11 @@ public class SpringCodegen extends AbstractJavaCodegen
                     }
                 });
 
+                // Process Response generic types for API operations
+                if (enableResponseGeneric) {
+                    processOperationResponseGeneric(operation, allModels);
+                }
+
                 prepareVersioningParameters(ops);
                 handleImplicitHeaders(operation);
             }
@@ -799,9 +811,70 @@ public class SpringCodegen extends AbstractJavaCodegen
             objs.put("tagDescription", escapeText(firstTag.getDescription()));
         }
 
+        // Add imports for model classes used in operations when enableResponseGeneric is true
+        addModelImportsToOperations(objs, allModels);
+
         removeImport(objs, "java.util.List");
 
         return objs;
+    }
+
+    /**
+     * Add imports for model classes used in operations when enableResponseGeneric is true.
+     * This ensures that API classes import the corresponding entity classes for generic response types.
+     */
+    private void addModelImportsToOperations(OperationsMap objs, List<ModelMap> allModels) {
+        if (!enableResponseGeneric) {
+            return;
+        }
+
+        OperationMap operations = objs.getOperations();
+        if (operations == null) {
+            return;
+        }
+
+        List<CodegenOperation> operationList = operations.getOperation();
+        if (operationList == null) {
+            return;
+        }
+
+        // Collect all generic types used in operations
+        Set<String> genericTypesToImport = new HashSet<>();
+
+        for (CodegenOperation operation : operationList) {
+            // Check if operation has a generic response type
+            String genericType = (String) operation.vendorExtensions.get("x-response-generic-type");
+            if (genericType != null && needToImport(genericType)) {
+                genericTypesToImport.add(genericType);
+                // Add to operation imports
+                operation.imports.add(genericType);
+            }
+        }
+
+        // Add the generic types to the overall imports for the API class
+        if (!genericTypesToImport.isEmpty()) {
+            List<Map<String, String>> imports = objs.getImports();
+            if (imports == null) {
+                imports = new ArrayList<>();
+                objs.setImports(imports);
+            }
+
+            for (String genericType : genericTypesToImport) {
+                String importPath = toModelImport(genericType);
+                if (importPath != null) {
+                    Map<String, String> importItem = new HashMap<>();
+                    importItem.put("import", importPath);
+
+                    // Check if import already exists to avoid duplicates
+                    boolean exists = imports.stream()
+                            .anyMatch(item -> importPath.equals(item.get("import")));
+
+                    if (!exists) {
+                        imports.add(importItem);
+                    }
+                }
+            }
+        }
     }
 
     private interface DataTypeAssigner {
@@ -1126,6 +1199,20 @@ public class SpringCodegen extends AbstractJavaCodegen
     }
 
     @Override
+    public ModelsMap postProcessModels(ModelsMap objs) {
+        objs = super.postProcessModels(objs);
+
+        if (enableResponseGeneric) {
+            for (ModelMap mo : objs.getModels()) {
+                CodegenModel cm = mo.getModel();
+                processResponseGeneric(cm);
+            }
+        }
+
+        return objs;
+    }
+
+    @Override
     public Map<String, ModelsMap> postProcessAllModels(Map<String, ModelsMap> objs) {
         objs = super.postProcessAllModels(objs);
 
@@ -1139,6 +1226,68 @@ public class SpringCodegen extends AbstractJavaCodegen
             }
         }
         return objs;
+    }
+
+    /**
+     * Process operation return types to add generic information for Response classes
+     */
+    private void processOperationResponseGeneric(CodegenOperation operation, List<ModelMap> allModels) {
+        if (allModels == null || operation.returnType == null || !operation.returnType.endsWith("Response")) {
+            return;
+        }
+
+        // Find the corresponding model to get the generic type
+        for (ModelMap modelMap : allModels) {
+            CodegenModel model = modelMap.getModel();
+            if (model.classname.equals(operation.returnType)) {
+                String genericType = (String) model.vendorExtensions.get("x-response-generic-type");
+                if (genericType != null) {
+                    // Update the return type to include specific generic information
+                    // Generate UserResponse<User> instead of UserResponse<T>
+                    operation.returnType = operation.returnType + "<" + genericType + ">";
+                    operation.vendorExtensions.put("x-response-generic-type", genericType);
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Process Response classes to add generic type information based on data list type
+     */
+    private void processResponseGeneric(CodegenModel model) {
+        // Check if this is a Response class (class name ends with "Response")
+        if (model.classname != null && model.classname.endsWith("Response")) {
+            // Look for a "data" property that is a list
+            for (CodegenProperty property : model.vars) {
+                if ("data".equals(property.name) && property.isArray && property.items != null) {
+                    // Set generic type information
+                    String genericType = property.items.dataType;
+                    model.vendorExtensions.put("x-response-generic-type", genericType);
+                    model.vendorExtensions.put("x-is-response-generic", true);
+
+                    // Keep the original datatype with specific type instead of using T
+                    // This ensures we generate List<User> instead of List<T>
+                    property.vendorExtensions.put("x-use-specific-generic-type", true);
+
+                    // Add import for the generic type if needed
+                    if (needToImport(genericType)) {
+                        model.imports.add(genericType);
+                    }
+                    break;
+                }
+            }
+
+            // If this is a generic response class, propagate the vendor extensions to all properties
+            // so that fluent setter methods can access them
+            if (model.vendorExtensions.containsKey("x-is-response-generic")) {
+                String genericType = (String) model.vendorExtensions.get("x-response-generic-type");
+                for (CodegenProperty property : model.vars) {
+                    property.vendorExtensions.put("x-is-response-generic", true);
+                    property.vendorExtensions.put("x-response-generic-type", genericType);
+                }
+            }
+        }
     }
 
     @Override

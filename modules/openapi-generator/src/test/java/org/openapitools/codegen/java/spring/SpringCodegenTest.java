@@ -5437,6 +5437,24 @@ public class SpringCodegenTest {
     }
 
     @Test
+    public void testEnableResponseGenericImportsEntityClasses() throws IOException {
+        Map<String, Object> additionalProperties = new HashMap<>();
+        additionalProperties.put(SpringCodegen.ENABLE_RESPONSE_GENERIC, "true");
+        additionalProperties.put(CodegenConstants.MODEL_TESTS, "false");
+        additionalProperties.put(CodegenConstants.MODEL_DOCS, "false");
+        additionalProperties.put(CodegenConstants.APIS, "true");
+        additionalProperties.put(CodegenConstants.SUPPORTING_FILES, "false");
+
+        Map<String, File> files = generateFromContract("src/test/resources/3_0/response-generic-test.yaml", SPRING_BOOT, additionalProperties);
+
+        // Check that the API class imports the User entity class
+        JavaFileAssert.assertThat(files.get("UsersApi.java"))
+                .hasImports("org.openapitools.model.User");
+    }
+
+
+
+    @Test
     public void testEnumWithImplements() {
         final Path output = newTempFolder();
         final OpenAPI openAPI = TestUtils.parseFlattenSpec("src/test/resources/3_0/enum-implements.yaml");
