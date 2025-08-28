@@ -109,6 +109,8 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
     public static final String DEFAULT_TEST_FOLDER = "${project.build.directory}/generated-test-sources/openapi";
     public static final String GENERATE_CONSTRUCTOR_WITH_ALL_ARGS = "generateConstructorWithAllArgs";
     public static final String GENERATE_BUILDERS = "generateBuilders";
+    public static final String USE_VERSION = "useVersion";
+
 
     @Getter @Setter
     protected String dateLibrary = "java8";
@@ -204,6 +206,9 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
      */
     @Getter @Setter
     protected boolean useBeanValidation = false;
+    @Getter @Setter
+    protected boolean useVersion = true;
+
     private Map<String, String> schemaKeyToModelNameCache = new HashMap<>();
 
     public AbstractJavaCodegen() {
@@ -345,6 +350,8 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
         cliOptions.add(CliOption.newBoolean(CONTAINER_DEFAULT_TO_NULL, "Set containers (array, set, map) default to null"));
         cliOptions.add(CliOption.newBoolean(GENERATE_CONSTRUCTOR_WITH_ALL_ARGS, "whether to generate a constructor for all arguments").defaultValue(Boolean.FALSE.toString()));
         cliOptions.add(CliOption.newBoolean(GENERATE_BUILDERS, "Whether to generate builders for models").defaultValue(Boolean.FALSE.toString()));
+        cliOptions.add(CliOption.newBoolean(USE_VERSION, "when false, replace '%' with '_tap_' in model names", this.useVersion));
+
 
         cliOptions.add(CliOption.newString(CodegenConstants.PARENT_GROUP_ID, CodegenConstants.PARENT_GROUP_ID_DESC));
         cliOptions.add(CliOption.newString(CodegenConstants.PARENT_ARTIFACT_ID, CodegenConstants.PARENT_ARTIFACT_ID_DESC));
@@ -574,6 +581,8 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
         convertPropertyToStringAndWriteBack(IMPLICIT_HEADERS_REGEX, this::setImplicitHeadersRegex);
         convertPropertyToBooleanAndWriteBack(CAMEL_CASE_DOLLAR_SIGN, this::setCamelCaseDollarSign);
         convertPropertyToBooleanAndWriteBack(USE_ONE_OF_INTERFACES, this::setUseOneOfInterfaces);
+        convertPropertyToBooleanAndWriteBack(USE_VERSION, this::setUseVersion);
+
         convertPropertyToStringAndWriteBack(CodegenConstants.ENUM_PROPERTY_NAMING, this::setEnumPropertyNaming);
 
         if (!StringUtils.isEmpty(parentGroupId) && !StringUtils.isEmpty(parentArtifactId) && !StringUtils.isEmpty(parentVersion)) {
@@ -968,6 +977,22 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
         return toVarName(name);
     }
 
+    /**
+     * Apply tap marker naming rule.
+     * When useVersion is true: remove only the "_tap_" markers and keep the content between.
+     * When useVersion is false: remove the content between two markers along with the markers.
+     */
+    private String applyTapMarkerRule(String input) {
+        if (input == null || !input.contains("_tap_")) {
+            return input;
+        }
+        if (useVersion) {
+            return input.replace("_tap_", "");
+        } else {
+            return input.replaceAll("_tap_.*?_tap_", "");
+        }
+    }
+
     @Override
     public String toModelName(final String name) {
         // obtain the name from modelNameMapping directly if provided
@@ -987,7 +1012,9 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
             return schemaKeyToModelNameCache.get(origName);
         }
 
-        final String sanitizedName = sanitizeName(name);
+        String toSanitizeName = applyTapMarkerRule(name);
+
+        final String sanitizedName = sanitizeName(toSanitizeName);
 
         String nameWithPrefixSuffix = sanitizedName;
         if (!StringUtils.isEmpty(modelNamePrefix)) {
@@ -1780,6 +1807,62 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
             LOGGER.error("No Type defined for Schema {}", p);
         }
         return toModelName(openAPIType);
+    }
+
+    /**
+     * Get operationId from the operation object, and if it's blank, generate a new one from the given parameters.
+     *
+     * @param operation  the operation object
+     * @param path       the path of the operation
+     * @param httpMethod the HTTP method of the operation
+     * @return the (generated) operationId
+     */
+    @Override
+    protected String getOrGenerateOperationId(Operation operation, String path, String httpMethod) {
+        String operationId = operation.getOperationId();
+
+        if (StringUtils.isBlank(operationId)) {
+            String tmpPath = path;
+            tmpPath = tmpPath.replaceAll("\\{", "");
+            tmpPath = tmpPath.replaceAll("\\}", "");
+            String[] parts = (tmpPath + "/" + httpMethod).split("/");
+            StringBuilder builder = new StringBuilder();
+            if ("/".equals(tmpPath)) {
+                // must be root tmpPath
+                builder.append("root");
+            }
+            for (String part : parts) {
+                if (part.length() > 0) {
+                    if (builder.toString().length() == 0) {
+                        part = Character.toLowerCase(part.charAt(0)) + part.substring(1);
+                    } else {
+                        part = camelize(part);
+                    }
+                    builder.append(part);
+                }
+            }
+            operationId = sanitizeName(builder.toString());
+            LOGGER.warn("Empty operationId found for path: {} {}. Renamed to auto-generated operationId: {}", httpMethod, path, operationId);
+        }
+
+        if (operationIdNameMapping.containsKey(operationId)) {
+            return operationIdNameMapping.get(operationId);
+        }
+
+        // remove prefix in operationId
+        if (removeOperationIdPrefix) {
+            // The prefix is everything before the removeOperationIdPrefixCount occurrence of removeOperationIdPrefixDelimiter
+            String[] components = operationId.split("[" + removeOperationIdPrefixDelimiter + "]");
+            if (components.length > 1) {
+                // If removeOperationIdPrefixCount is -1 or bigger that the number of occurrences, uses the last one
+                int component_number = removeOperationIdPrefixCount == -1 ? components.length - 1 : removeOperationIdPrefixCount;
+                component_number = Math.min(component_number, components.length - 1);
+                // Reconstruct the operationId from its split elements and the delimiter
+                operationId = String.join(removeOperationIdPrefixDelimiter, Arrays.copyOfRange(components, component_number, components.length));
+            }
+        }
+
+        return toOperationId(removeNonNameElementToCamelCase(applyTapMarkerRule(operationId)));
     }
 
     @Override
