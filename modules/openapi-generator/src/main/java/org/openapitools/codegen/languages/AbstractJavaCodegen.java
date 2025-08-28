@@ -110,6 +110,7 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
     public static final String GENERATE_CONSTRUCTOR_WITH_ALL_ARGS = "generateConstructorWithAllArgs";
     public static final String GENERATE_BUILDERS = "generateBuilders";
     public static final String USE_VERSION = "useVersion";
+    public static final String REMOVE_REQUEST_PREFIX = "removeRequestPrefix";
 
 
     @Getter @Setter
@@ -208,6 +209,8 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
     protected boolean useBeanValidation = false;
     @Getter @Setter
     protected boolean useVersion = true;
+    @Getter @Setter
+    protected List<String> removeRequestPrefixes = new ArrayList<>();
 
     private Map<String, String> schemaKeyToModelNameCache = new HashMap<>();
 
@@ -351,6 +354,7 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
         cliOptions.add(CliOption.newBoolean(GENERATE_CONSTRUCTOR_WITH_ALL_ARGS, "whether to generate a constructor for all arguments").defaultValue(Boolean.FALSE.toString()));
         cliOptions.add(CliOption.newBoolean(GENERATE_BUILDERS, "Whether to generate builders for models").defaultValue(Boolean.FALSE.toString()));
         cliOptions.add(CliOption.newBoolean(USE_VERSION, "when false, replace '%' with '_tap_' in model names", this.useVersion));
+        cliOptions.add(CliOption.newString(REMOVE_REQUEST_PREFIX, "Comma-separated prefixes to remove from model names that end with 'request'. E.g., 'find,get'"));
 
 
         cliOptions.add(CliOption.newString(CodegenConstants.PARENT_GROUP_ID, CodegenConstants.PARENT_GROUP_ID_DESC));
@@ -582,6 +586,12 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
         convertPropertyToBooleanAndWriteBack(CAMEL_CASE_DOLLAR_SIGN, this::setCamelCaseDollarSign);
         convertPropertyToBooleanAndWriteBack(USE_ONE_OF_INTERFACES, this::setUseOneOfInterfaces);
         convertPropertyToBooleanAndWriteBack(USE_VERSION, this::setUseVersion);
+        convertPropertyToTypeAndWriteBack(REMOVE_REQUEST_PREFIX,
+                prefixes -> Arrays.stream(prefixes.split(","))
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .collect(Collectors.toList()),
+                this::setRemoveRequestPrefixes);
 
         convertPropertyToStringAndWriteBack(CodegenConstants.ENUM_PROPERTY_NAMING, this::setEnumPropertyNaming);
 
@@ -982,6 +992,35 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
      * When useVersion is true: remove only the "_tap_" markers and keep the content between.
      * When useVersion is false: remove the content between two markers along with the markers.
      */
+
+    /**
+     * Remove configured prefixes from names that end with 'request'.
+     * The prefixes are matched at the start of the name (case-insensitive) and are comma-separated in config.
+     */
+    private String applyRemoveRequestPrefixIfNeeded(String input) {
+        if (input == null || removeRequestPrefixes == null || removeRequestPrefixes.isEmpty()) {
+            return input;
+        }
+        String lower = input.toLowerCase(Locale.ROOT);
+        if (!lower.endsWith("request")) {
+            return input;
+        }
+        for (String p : removeRequestPrefixes) {
+            if (p == null) continue;
+            String pt = p.trim();
+            if (pt.isEmpty()) continue;
+            if (lower.startsWith(pt.toLowerCase(Locale.ROOT))) {
+                String result = input.substring(pt.length());
+                // trim leading underscores introduced by removal
+                while (result.startsWith("_")) {
+                    result = result.substring(1);
+                }
+                return result;
+            }
+        }
+        return input;
+    }
+
     private String applyTapMarkerRule(String input) {
         if (input == null || !input.contains("_tap_")) {
             return input;
@@ -1012,7 +1051,7 @@ public abstract class AbstractJavaCodegen extends DefaultCodegen implements Code
             return schemaKeyToModelNameCache.get(origName);
         }
 
-        String toSanitizeName = applyTapMarkerRule(name);
+        String toSanitizeName = applyRemoveRequestPrefixIfNeeded(applyTapMarkerRule(name));
 
         final String sanitizedName = sanitizeName(toSanitizeName);
 
